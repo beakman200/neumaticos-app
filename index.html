@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neumáticos</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:640px;margin:0 auto;padding:16px;background:#f4f6f8;color:#222}
+  h1{font-size:1.4rem}
+  .card{background:#fff;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 1px 4px #0002}
+  .card.activo{border:3px solid #2e7d32}
+  .card h2{margin:0 0 8px;font-size:1.1rem}
+  button{padding:10px 14px;border:0;border-radius:8px;background:#1565c0;color:#fff;font-size:1rem;cursor:pointer;margin-top:6px}
+  button.sec{background:#607d8b}
+  button.nuevo{background:#e65100}
+  input{padding:8px;font-size:1rem;width:100%;box-sizing:border-box;margin:6px 0}
+  table{width:100%;border-collapse:collapse;font-size:.9rem}
+  td,th{border-bottom:1px solid #ddd;padding:6px;text-align:left}
+  .msg{font-size:.85rem;color:#555}
+</style>
+</head>
+<body>
+<h1>🛞 Neumáticos de invierno y verano</h1>
+
+<div class="card" id="config">
+  <strong>Configuración de GitHub</strong>
+  <input id="usuario" placeholder="Usuario de GitHub">
+  <input id="repo" placeholder="Repositorio (ej. neumaticos)">
+  <input id="token" type="password" placeholder="Token de acceso">
+  <button onclick="guardarConfig()">Guardar y cargar datos</button>
+  <p class="msg">Se guarda solo en este navegador.</p>
+</div>
+
+<div id="app" style="display:none">
+  <div id="juegos"></div>
+
+  <div class="card">
+    <strong>Kilómetros actuales del coche</strong>
+    <input id="kmActual" type="number" min="0" placeholder="Ej. 85400">
+    <button class="sec" onclick="actualizarKm()">Actualizar kilómetros</button>
+    <button onclick="cambiar()">Cambiar neumáticos</button>
+  </div>
+
+  <div class="card">
+    <strong>Próximo cambio (estimado)</strong>
+    <p id="proximo"></p>
+  </div>
+
+  <div class="card">
+    <strong>Historial de cambios</strong>
+    <table id="hist"></table>
+  </div>
+
+  <div class="card">
+    <strong>Neumáticos retirados</strong>
+    <table id="retirados"></table>
+  </div>
+</div>
+
+<p class="msg" id="estado"></p>
+
+<script>
+let datos=null, sha=null;
+const cfg=()=>JSON.parse(localStorage.getItem('cfgNeu')||'null');
+const url=()=>{const c=cfg();return `https://api.github.com/repos/${c.usuario}/${c.repo}/contents/datos.json`};
+const cab=()=>({Authorization:'Bearer '+cfg().token,Accept:'application/vnd.github+json'});
+const estado=t=>document.getElementById('estado').textContent=t;
+const hoyISO=()=>new Date().toISOString().slice(0,10);
+
+function guardarConfig(){
+  localStorage.setItem('cfgNeu',JSON.stringify({
+    usuario:usuario.value.trim(),repo:repo.value.trim(),token:token.value.trim()}));
+  cargar();
+}
+
+async function cargar(){
+  if(!cfg()){return}
+  estado('Cargando...');
+  try{
+    const r=await fetch(url(),{headers:cab()});
+    if(!r.ok) throw new Error('Error '+r.status);
+    const j=await r.json();
+    sha=j.sha;
+    datos=JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\n/g,'')))));
+    if(!datos.retirados) datos.retirados=[];
+    document.getElementById('config').style.display='none';
+    document.getElementById('app').style.display='block';
+    pintar(); estado('');
+  }catch(e){estado('No se pudo cargar: '+e.message)}
+}
+
+async function guardar(){
+  estado('Guardando...');
+  const contenido=btoa(unescape(encodeURIComponent(JSON.stringify(datos,null,2))));
+  const r=await fetch(url(),{method:'PUT',headers:cab(),
+    body:JSON.stringify({message:'Actualiza datos',content:contenido,sha})});
+  if(!r.ok){estado('Error al guardar: '+r.status);return}
+  sha=(await r.json()).content.sha;
+  estado('Guardado ✔');
+}
+
+function fmt(f){return f?new Date(f).toLocaleDateString('es-ES'):'—'}
+
+function kmJuego(n){
+  const j=datos.juegos[n];
+  let km=j.kmAcumulados;
+  if(datos.activo===n && j.kmCocheMontaje!=null) km+=Math.max(0,datos.kmCoche-j.kmCocheMontaje);
+  return km;
+}
+
+function pintar(){
+  document.getElementById('juegos').innerHTML=['invierno','verano'].map(n=>{
+    const j=datos.juegos[n], act=datos.activo===n;
+    return `<div class="card ${act?'activo':''}"><h2>${n==='invierno'?'❄️ Invierno':'☀️ Verano'} ${act?'(montados ahora)':'(guardados)'}</h2>
+      <div>Kilómetros: <strong>${kmJuego(n).toLocaleString('es-ES')} km</strong></div>
+      <div>Comprados: ${fmt(j.fechaCompra)}</div>
+      <div>Último montaje: ${fmt(j.fechaMontaje)}</div>
+      <button class="nuevo" onclick="nuevos('${n}')">Neumáticos nuevos</button></div>`}).join('');
+
+  const hoy=new Date(), y=hoy.getFullYear();
+  const hacia=datos.activo==='verano'?'invierno':'verano';
+  const mes=hacia==='invierno'?9:3; // octubre=9, abril=3
+  let f=new Date(y,mes,15); if(f<hoy) f=new Date(y+1,mes,15);
+  proximo.textContent=`Cambio a ${hacia} aproximadamente a mediados de ${f.toLocaleDateString('es-ES',{month:'long',year:'numeric'})}.`;
+
+  hist.innerHTML='<tr><th>Fecha</th><th>Pasa a</th><th>Km coche</th><th>Km del juego que sale</th></tr>'+
+    datos.historial.slice().reverse().map(h=>`<tr><td>${fmt(h.fecha)}</td><td>${h.pasaA}</td><td>${h.kmCoche.toLocaleString('es-ES')}</td><td>${h.kmJuegoSaliente.toLocaleString('es-ES')}</td></tr>`).join('');
+
+  retirados.innerHTML=datos.retirados.length
+    ?'<tr><th>Retirados</th><th>Juego</th><th>Km totales</th><th>Nota</th></tr>'+
+      datos.retirados.slice().reverse().map(r=>`<tr><td>${fmt(r.fechaRetirada)}</td><td>${r.tipo}</td><td>${r.kmTotales.toLocaleString('es-ES')}</td><td>${r.nota||''}</td></tr>`).join('')
+    :'<tr><td>Todavía no has retirado ningún juego.</td></tr>';
+}
+
+async function actualizarKm(){
+  const v=parseInt(kmActual.value);
+  if(isNaN(v)||v<datos.kmCoche){alert('Introduce un kilometraje válido (no menor que el anterior).');return}
+  datos.kmCoche=v; pintar(); await guardar();
+}
+
+async function cambiar(){
+  const v=parseInt(kmActual.value);
+  if(isNaN(v)||v<datos.kmCoche){alert('Introduce los kilómetros actuales del coche.');return}
+  datos.kmCoche=v;
+  const sale=datos.activo, entra=sale==='verano'?'invierno':'verano';
+  const kmSale=kmJuego(sale);
+  datos.juegos[sale].kmAcumulados=kmSale;
+  datos.juegos[sale].kmCocheMontaje=null;
+  datos.juegos[entra].fechaMontaje=hoyISO();
+  datos.juegos[entra].kmCocheMontaje=v;
+  datos.activo=entra;
+  datos.historial.push({fecha:datos.juegos[entra].fechaMontaje,pasaA:entra,kmCoche:v,kmJuegoSaliente:kmSale});
+  pintar(); await guardar();
+}
+
+// Un juego llega al final de su vida: se archiva y se empieza con uno nuevo a 0 km.
+async function nuevos(n){
+  const j=datos.juegos[n], act=datos.activo===n;
+  if(act){
+    const v=parseInt(kmActual.value);
+    if(isNaN(v)||v<datos.kmCoche){alert('Este juego está montado ahora. Escribe primero los kilómetros actuales del coche en el recuadro de abajo.');return}
+    datos.kmCoche=v;
+  }
+  const nombre=n==='invierno'?'invierno':'verano';
+  if(!confirm(`¿Retirar los neumáticos de ${nombre} actuales y empezar con unos nuevos a 0 km?`)) return;
+  const nota=prompt('Nota opcional sobre los neumáticos que retiras (marca, modelo...):')||'';
+  const km=kmJuego(n);
+  datos.retirados.push({tipo:nombre,kmTotales:km,fechaCompra:j.fechaCompra||null,fechaRetirada:hoyISO(),nota:nota.trim()});
+  j.kmAcumulados=0;
+  j.fechaCompra=hoyISO();
+  if(act){ j.fechaMontaje=hoyISO(); j.kmCocheMontaje=datos.kmCoche; }
+  else { j.fechaMontaje=null; j.kmCocheMontaje=null; }
+  pintar(); await guardar();
+}
+
+if(cfg()){usuario.value=cfg().usuario;repo.value=cfg().repo;cargar()}
+</script>
+</body>
+</html>
